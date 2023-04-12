@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2000, 2017, 2019, 2023 Aleksander Mazur
+
+import sys, os, time, struct
+
+########################################
+
+def get_toc(f):
+	toc = []
+	entry_parser = struct.Struct("<12sL")
+	count = 0
+	index = 0
+	offset = entry_parser.size
+	while index <= count:
+		(name, size) = entry_parser.unpack(f.read(entry_parser.size))
+		length = name.find(0)
+		if length >= 0:
+			name = name[:length]
+		name = name.decode()
+		if index == 0:
+			count = size
+			offset += count * entry_parser.size
+		else:
+			toc.append({ "name": name, "size": size, "offset": offset })
+			offset += size
+		index += 1
+	return toc
+
+########################################
+
+def do_list(archive):
+	with open(archive, "rb") as f:
+		statinfo = os.fstat(f.fileno())
+		toc = get_toc(f)
+		statinfo = {
+			"uid": statinfo.st_uid,
+			"gid": statinfo.st_gid,
+			"datetime": time.strftime("%m/%d/%Y %H:%M:%S", time.localtime(statinfo.st_mtime)),
+			"perm": "-rw-r--r--",
+			"links": 1
+		}
+		for entry in toc:
+			statinfo.update(entry)
+			print("{perm} {links} {uid} {gid} {size} {datetime} {name}".format(**statinfo))
+
+########################################
+
+def copy_file(fin, fout, total):
+	BUFSIZ = 4096
+	written = 0
+	while written < total:
+		amount = total - written
+		if amount > BUFSIZ:
+			amount = BUFSIZ
+		buf = fin.read(amount)
+		if len(buf) == 0:
+			break
+		if fout.write(buf) != len(buf):
+			print("Cannot write to %s" % storedfile, file=sys.stderr)
+			break
+		written += len(buf)
+
+def do_copyout(archive, storedfile, destination):
+	with open(archive, "rb") as f:
+		toc = get_toc(f)
+		for entry in toc:
+			if entry["name"] == storedfile:
+				f.seek(entry["offset"])
+				with open(destination, "wb") as fout:
+					copy_file(f, fout, entry["size"])
+				return
+	print("Cannot find file %s" % storedfile, file=sys.stderr)
+
+########################################
+
+if len(sys.argv) < 3:
+	sys.exit(1)
+if sys.argv[1] == "list":
+	do_list(sys.argv[2])
+elif sys.argv[1] == "copyout":
+	do_copyout(sys.argv[2], sys.argv[3], sys.argv[4])
+else:
+	print("Unsupported command: %s" % sys.argv[1], file=sys.stderr)
+	sys.exit(1)
+sys.exit(0)

@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2017, 2019, 2023 Aleksander Mazur
+
+import sys, os, time, struct
+
+########################################
+
+def swap32(x):
+	return (((x << 24) & 0xFF000000) |
+			((x <<  8) & 0x00FF0000) |
+			((x >>  8) & 0x0000FF00) |
+			((x >> 24) & 0x000000FF))
+
+def get_toc(f, statinfo=None):
+	header_parser = struct.Struct(">4sLLL")
+	entry_parser = struct.Struct(">LL")
+	buf = f.read(header_parser.size)
+	(file_header, file_size, files_cnt, data_offset) = header_parser.unpack(buf)
+	if file_header != b'BIGF':
+		print("Invalid header: %s" % file_header, file=sys.stderr)
+		sys.exit(1)
+	if (statinfo != None) and (file_size != statinfo.st_size):
+		file_size = swap32(file_size)
+		if file_size != statinfo.st_size:
+			print("According to header, size of the file should be %s" % file_size, file=sys.stderr)
+			#sys.exit(1)
+	if data_offset <= header_parser.size:
+		print("Data overlaps with header", file=sys.stderr)
+		sys.exit(1)
+	if data_offset > file_size:
+		print("Data beyond EOF", file=sys.stderr)
+		sys.exit(1)
+	if data_offset > 16*1024*1024:
+		print("TOC greater than 16 MB", file=sys.stderr)
+		sys.exit(1)
+	entries_data = f.read(data_offset - header_parser.size)
+	offset = 0
+	toc = []
+	while (len(toc) < files_cnt) and (offset < len(entries_data)):
+		(file_offset, file_size) = entry_parser.unpack(entries_data[offset:offset + entry_parser.size])
+		entry = {
+			"size": file_size,
+			"offset": file_offset
+		}
+		offset += entry_parser.size
+		name_len = 0
+		while (offset + name_len < data_offset - header_parser.size) and (entries_data[offset + name_len] != 0):
+			name_len += 1
+		file_name = entries_data[offset:offset + name_len].decode()
+		entry["name"] = file_name
+		offset += name_len + 1
+		toc.append(entry)
+	if len(toc) != files_cnt:
+		print("TOC contains %u files instead of %u" % (len(toc), files_cnt), file=sys.stderr)
+	return toc
+
+########################################
+
+def do_list(archive):
+	with open(archive, "rb") as f:
+		statinfo = os.fstat(f.fileno())
+		toc = get_toc(f, statinfo)
+		statinfo = {
+			"uid": statinfo.st_uid,
+			"gid": statinfo.st_gid,
+			"datetime": time.strftime("%m/%d/%Y %H:%M:%S", time.localtime(statinfo.st_mtime)),
+			"perm": "-rw-r--r--",
+			"links": 1
+		}
+		for entry in toc:
+			statinfo.update(entry)
+			print("{perm} {links} {uid} {gid} {size} {datetime} {name}".format(**statinfo))
+
+########################################
+
+def copy_file(fin, fout, total):
+	BUFSIZ = 4096
+	written = 0
+	while written < total:
+		amount = total - written
+		if amount > BUFSIZ:
+			amount = BUFSIZ
+		buf = fin.read(amount)
+		if len(buf) == 0:
+			break
+		if fout.write(buf) != len(buf):
+			print("Cannot write to %s" % storedfile, file=sys.stderr)
+			break
+		written += len(buf)
+
+def do_copyout(archive, storedfile, destination):
+	with open(archive, "rb") as f:
+		toc = get_toc(f)
+		for entry in toc:
+			if entry["name"] == storedfile:
+				f.seek(entry["offset"])
+				with open(destination, "wb") as fout:
+					copy_file(f, fout, entry["size"])
+				return
+	print("Cannot find file %s" % storedfile, file=sys.stderr)
+
+########################################
+
+if len(sys.argv) < 3:
+	sys.exit(1)
+if sys.argv[1] == "list":
+	do_list(sys.argv[2])
+elif sys.argv[1] == "copyout":
+	do_copyout(sys.argv[2], sys.argv[3], sys.argv[4])
+else:
+	print("Unsupported command: %s" % sys.argv[1], file=sys.stderr)
+	sys.exit(1)
+sys.exit(0)

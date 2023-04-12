@@ -1,0 +1,13 @@
+### Game archives
+
+# VIV
+shell/i/.viv
+	Open=%cd %p/uviv://
+
+# GRP
+type/^Build engine group file
+	Open=%cd %p/ugrp://
+
+# WAD
+type/(IWAD|PWAD) data
+	Open=%cd %p/uwad://

@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2017, 2019, 2023 Aleksander Mazur
+
+import sys, os, time, struct
+
+########################################
+
+def is_map_start(name):
+	return ((len(name) == 4) and (name[0] == 'E') and (name[2] == 'M') and name[1].isdigit() and name[3].isdigit()) \
+	or ((len(name) == 5) and (name[:3] == 'MAP') and name[3:].isdigit())
+
+def get_toc(f, statinfo=None):
+	global_lumps = ['PLAYPAL', 'COLORMAP', 'ENDOOM', 'PNAMES']
+	global_lump_pfx = ['TEXTURE', 'DEMO']
+	header_parser = struct.Struct("<4sLL")
+	entry_parser = struct.Struct("<LL8s")
+	buf = f.read(header_parser.size)
+	(file_header, files_cnt, toc_offset) = header_parser.unpack(buf)
+	if (file_header != b'IWAD') and (file_header != b'PWAD'):
+		print("Invalid header: %s" % file_header, file=sys.stderr)
+		sys.exit(1)
+	file_size = toc_offset + files_cnt * entry_parser.size
+	if (statinfo != None) and (file_size != statinfo.st_size):
+		print("According to header, size of the file should be %u + %u * %u = %u" % (toc_offset, files_cnt, entry_parser.size, file_size), file=sys.stderr)
+		sys.exit(1)
+	f.seek(toc_offset)
+	toc = []
+	index = 0
+	subdirs = []
+	path = ''
+	duplicates = {}
+	while index < files_cnt:
+		(offset, size, name) = entry_parser.unpack(f.read(entry_parser.size))
+		if (offset > file_size) or (offset + size > file_size):
+			print("File beyond EOF: %u + %u > %u" % (offset, size, file_size), file=sys.stderr)
+		else:
+			is_dir = False
+			length = name.find(0)
+			if length >= 0:
+				name = name[:length]
+			name = name.decode()
+			if size == 0:
+				if name.endswith('_START'):
+					name = name[:-len('_START')]
+					path = None
+					is_dir = True
+				elif name.endswith('_END'):
+					name = name[:-len('_END')]
+					start_marker = subdirs.pop()
+					if name != start_marker:
+						print("End marker %s doesn't match %s" % (name, start_marker), file=sys.stderr)
+					path = None
+					name = None
+				elif is_map_start(name):
+					path = None
+					is_dir = True
+
+			if is_dir or (name in global_lumps):
+				auto_dir_up = True
+			elif name:
+				auto_dir_up = False
+				for pfx in global_lump_pfx:
+					if name.startswith(pfx) and name[len(pfx):].isdigit():
+						auto_dir_up = True
+						break
+
+			if auto_dir_up and (len(subdirs) > 0) and is_map_start(subdirs[-1]):
+				subdirs.pop()
+				path = None
+			if is_dir:
+				subdirs.append(name)
+			if path == None:
+				path = '/'.join(subdirs)
+				if path != '':
+					path += '/'
+			if not is_dir and (name != None):
+				name = path + name
+				if name in duplicates:
+					duplicates[name] += 1
+					name += ' %u' % duplicates[name]
+				else:
+					duplicates[name] = 0
+				toc.append({ "name": name, "size": size, "offset": offset })
+		index += 1
+	return toc
+
+########################################
+
+def do_list(archive):
+	with open(archive, "rb") as f:
+		statinfo = os.fstat(f.fileno())
+		toc = get_toc(f)
+		statinfo = {
+			"uid": statinfo.st_uid,
+			"gid": statinfo.st_gid,
+			"datetime": time.strftime("%m/%d/%Y %H:%M:%S", time.localtime(statinfo.st_mtime)),
+			"perm": "-rw-r--r--",
+			"links": 1
+		}
+		for entry in toc:
+			statinfo.update(entry)
+			print("{perm} {links} {uid} {gid} {size} {datetime} {name}".format(**statinfo))
+
+########################################
+
+def copy_file(fin, fout, total):
+	BUFSIZ = 4096
+	written = 0
+	while written < total:
+		amount = total - written
+		if amount > BUFSIZ:
+			amount = BUFSIZ
+		buf = fin.read(amount)
+		if len(buf) == 0:
+			break
+		if fout.write(buf) != len(buf):
+			print("Cannot write to %s" % storedfile, file=sys.stderr)
+			break
+		written += len(buf)
+
+def do_copyout(archive, storedfile, destination):
+	with open(archive, "rb") as f:
+		toc = get_toc(f)
+		for entry in toc:
+			if entry["name"] == storedfile:
+				f.seek(entry["offset"])
+				with open(destination, "wb") as fout:
+					copy_file(f, fout, entry["size"])
+				return
+	print("Cannot find file %s" % storedfile, file=sys.stderr)
+
+########################################
+
+if len(sys.argv) < 3:
+	sys.exit(1)
+if sys.argv[1] == "list":
+	do_list(sys.argv[2])
+elif sys.argv[1] == "copyout":
+	do_copyout(sys.argv[2], sys.argv[3], sys.argv[4])
+else:
+	print("Unsupported command: %s" % sys.argv[1], file=sys.stderr)
+	sys.exit(1)
+sys.exit(0)
